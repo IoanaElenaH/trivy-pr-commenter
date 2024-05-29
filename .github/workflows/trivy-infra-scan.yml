@@ -1,0 +1,139 @@
+---
+# Trivy AWS https://github.com/aquasecurity/trivy-policies/tree/275c474642c9ce66131245ae4134681c8b6f63af/rules/cloud/policies/aws
+name: Trivy Security Checks
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  trivy_scan_terraform:
+    name: Run Trivy Scan for Terraform files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@v4
+
+      - name: Fetch origin/master for getting diff
+        run: git fetch --no-tags --prune --depth=1 origin +refs/heads/*:refs/remotes/origin/*
+
+      - name: Sync Updated Dir to Work Dir
+        run: |
+          git diff --name-only origin/master origin/${{ github.event.pull_request.head.ref }} > changed_files.txt
+          mkdir tmp
+          xargs -I % cp % tmp/ < changed_files.txt
+
+      - name: Trivy Scan for Terraform files
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          hide-progress: false
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          scan-ref: tmp
+          output: trivy-scan-result-terraform.txt
+
+      - name: Count Critical and High Vulnerabilities for Terraform
+        id: count_vulnerabilities_terraform
+        run: |
+          if [ -s trivy-scan-result-terraform.txt ]; then
+            critical_count=$(grep -i -c "CRITICAL" trivy-scan-result-terraform.txt || true)
+            high_count=$(grep -i -c "HIGH" trivy-scan-result-terraform.txt || true)
+            echo "critical_count=$critical_count" >> $GITHUB_ENV
+            echo "high_count=$high_count" >> $GITHUB_ENV
+          else
+            echo "critical_count=0" >> $GITHUB_ENV
+            echo "high_count=0" >> $GITHUB_ENV
+            echo "No new vulnerabilities detected."
+          fi
+      
+      - name: Format Trivy Scan Result for Terraform
+        run: |
+          if [ -s trivy-scan-result-terraform.txt ]; then
+            scan_result=$(cat trivy-scan-result-terraform.txt)
+            echo -e "## Vulnerability scan results for Terraform files\n<details><summary>Details</summary>\n\n\`\`\`\n$scan_result\n\`\`\`\n</details>" > formatted-trivy-result-terraform.txt
+          else
+            echo -e "## Vulnerability scan result for Terraform files\nNo vulnerabilities detected." > formatted-trivy-result-terraform.txt
+          fi
+
+      - name: Display Trivy Scan Results for Terraform
+        run: |
+          cat trivy-scan-result-terraform.txt
+
+      - name: Comment on Pull Request for Terraform
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+              const fs = require('fs');
+              const body = fs.readFileSync('formatted-trivy-result-terraform.txt', 'utf8');
+              const criticalCount = parseInt(process.env.critical_count);
+              const highCount = parseInt(process.env.high_count);
+              const commentBody = `Trivy Scan Summary for Terraform files:\nNumber of Critical Vulnerabilities: ${criticalCount}\nNumber of High Vulnerabilities: ${highCount}\n\n${body}`;
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: commentBody
+              });
+
+  trivy_scan_all_code:
+    name: Run Trivy Scan for all code
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+  
+      - name: Trivy Scan for all code
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          hide-progress: false
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: 'CRITICAL,HIGH'
+          output: trivy-scan-result-all-code.txt
+
+      - name: Format Trivy Scan Result for all code
+        run: |
+          if [ -s trivy-scan-result-all-code.txt ]; then
+            scan_result=$(cat trivy-scan-result-all-code.txt)
+            echo -e "<html><body><h2>Vulnerability scan results for all code</h2><pre>$scan_result</pre></body></html>" > trivy-scan-result-all-code.html
+          else
+            echo -e "<html><body><h2>No vulnerabilities detected.</h2></body></html>" > trivy-scan-result-all-code.html
+          fi
+    
+      - name: Upload Trivy Scan Results for all code
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-result-all-code
+          path: trivy-scan-result-all-code.html
+    
+      - name: Output HTML Link
+        id: output_html_link
+        run: |
+            echo "HTML_LINK=${{ github.server_url }}/${{ github.repository }}/-/jobs/${{ github.run_id }}/artifacts/trivy-scan-result-all-code.html" >> $GITHUB_ENV
+        
+      - name: Comment HTML Link
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ github.token }}
+          script: |
+              const htmlLink = process.env.HTML_LINK;
+              const commentBody = `Vulnerability scan results for all code: [HTML Report](${htmlLink})`;
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: commentBody
+              });
